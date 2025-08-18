@@ -41,6 +41,7 @@ import dagger.Component
 import dagger.android.AndroidInjectionModule
 import dagger.android.AndroidInjector
 import app.aaps.pump.common.di.RileyLinkModule
+import info.nightscout.androidaps.plugins.pump.carelevo.di.CarelevoModule
 import info.nightscout.pump.combov2.di.ComboV2Module
 import javax.inject.Singleton
 
@@ -90,7 +91,8 @@ import javax.inject.Singleton
         RileyLinkModule::class,
         MedtrumModule::class,
         EquilModule::class,
-        VirtualPumpModule::class
+        VirtualPumpModule::class,
+        CarelevoModule::class
     ]
 )
 interface AppComponent : AndroidInjector<MainApp>, ComposeUi {
