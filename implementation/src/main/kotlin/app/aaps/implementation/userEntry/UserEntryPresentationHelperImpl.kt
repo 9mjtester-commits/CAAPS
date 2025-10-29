@@ -120,6 +120,7 @@ class UserEntryPresentationHelperImpl @Inject constructor(
         Sources.Unknown             -> app.aaps.core.ui.R.drawable.ic_generic_icon
         Sources.Random              -> R.drawable.ic_aaps
         Sources.BgFragment          -> R.drawable.ic_aaps
+        Sources.Carelevo -> app.aaps.core.ui.R.drawable.ic_eopatch2_128
     }
 
     override fun actionToColoredString(action: Action): Spanned = when (action) {
