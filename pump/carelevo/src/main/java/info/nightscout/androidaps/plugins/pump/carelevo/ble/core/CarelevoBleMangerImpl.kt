@@ -215,6 +215,16 @@ class CarelevoBleMangerImpl @Inject constructor(
         Thread.sleep(100)
         bluetoothGatt = null
 
+        CarelevoBleSource.bluetoothState.value?.let { bleState ->
+            val currentState = bleState.copy(
+                isConnected = PeripheralConnectionState.CONN_STATE_NONE,
+                isBonded = BondingState.BOND_NONE,
+                isNotificationEnabled = NotificationState.NOTIFICATION_NONE,
+                isServiceDiscovered = ServiceDiscoverState.DISCOVER_STATE_NONE
+            )
+            CarelevoBleSource._bluetoothState.onNext(currentState)
+
+        }
         return true
     }
 

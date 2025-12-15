@@ -38,6 +38,7 @@ import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.patch.Car
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.patch.CarelevoPatchForceDiscardUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.patch.model.CarelevoConnectNewPatchRequestModel
 import info.nightscout.androidaps.plugins.pump.carelevo.ui.model.CarelevoConnectPrepareEvent
+import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -260,30 +261,25 @@ class CarelevoPatchConnectViewModel @Inject constructor(
         }
 
         val address = selectedDevice?.device?.address ?: ""
-        bleController.clearBond(address)
-
-        connectDisposable += bleController.execute(Connect(address))
-            .observeOn(aapsSchedulers.io)
-            .subscribeOn(aapsSchedulers.io)
-            .subscribe { result ->
-                when (result) {
-                    is CommandResult.Success -> {
-                        Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] connect result success")
-                    }
-
-                    else -> {
-                        Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] connect result failed")
-                        stopConnect()
-                    }
-                }
+        connectDisposable += Completable.fromAction {
+            bleController.clearBond(address).also {
+                Log.d("ble_test", "[PatchConnectConnectViewModel::startConnect] bondRemoveResult : $it")
             }
+        }
+            .andThen(Completable.timer(commandDelay, TimeUnit.MILLISECONDS))
+            .subscribeOn(aapsSchedulers.io)
+            .observeOn(aapsSchedulers.io)
+            .subscribe({
+                       }, { e ->
+                           Log.e("ble_test", "[PatchConnectConnectViewModel::startConnect] bond remove + delay error")
+                           stopConnect()
+                       })
 
         connectDisposable += carelevoPatch.btState
             .observeOn(aapsSchedulers.io)
             .subscribeOn(aapsSchedulers.io)
             .subscribe { btState ->
                 setUiState(UiState.Loading)
-
                 Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] bt state : $btState")
                 btState?.getOrNull()?.let { state ->
                     if (state.shouldBeConnected()) {
@@ -337,6 +333,22 @@ class CarelevoPatchConnectViewModel @Inject constructor(
                         Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] is pairing failed called")
                         Thread.sleep(commandDelay)
                         bleController.clearGatt()
+                        stopConnect()
+                    }
+                }
+            }
+
+        connectDisposable += bleController.execute(Connect(address))
+            .observeOn(aapsSchedulers.io)
+            .subscribeOn(aapsSchedulers.io)
+            .subscribe { result ->
+                when (result) {
+                    is CommandResult.Success -> {
+                        Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] connect result success")
+                    }
+
+                    else -> {
+                        Log.d("connect_test", "[CarelevoConnectPrepareViewModel::startConnect] connect result failed")
                         stopConnect()
                     }
                 }
@@ -403,5 +415,11 @@ class CarelevoPatchConnectViewModel @Inject constructor(
                     }
                 }
             }
+    }
+
+    override fun onCleared() {
+        Log.d("connect_test", "[CarelevoConnectPrepareViewModel::onCleared]")
+        connectDisposable.clear()
+        super.onCleared()
     }
 }
