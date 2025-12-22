@@ -10,13 +10,13 @@ import app.aaps.core.interfaces.rx.events.EventPumpStatusChanged
 import app.aaps.core.interfaces.sharedPreferences.SP
 import app.aaps.core.keys.DoubleKey
 import app.aaps.core.keys.interfaces.Preferences
-import info.nightscout.androidaps.plugins.pump.carelevo.R
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.CarelevoBleSource
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.core.CarelevoBleController
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.data.BleState
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.data.DeviceModuleState
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.data.isAvailable
 import info.nightscout.androidaps.plugins.pump.carelevo.ble.data.isPeripheralConnected
+import info.nightscout.androidaps.plugins.pump.carelevo.common.keys.CarelevoIntPreferenceKey
 import info.nightscout.androidaps.plugins.pump.carelevo.common.model.PatchState
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.CarelevoPatchObserver
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.ResponseResult
@@ -557,7 +557,7 @@ class CarelevoPatch @Inject constructor(
 
     private fun createUserSettingInfo() {
         val maxBolusDose = preferences.get(DoubleKey.SafetyMaxBolus)
-        val lowInsulinNoticeAmount = sp.getInt(R.string.key_carelevo_low_reservoir_reminders, 0)
+        val lowInsulinNoticeAmount = sp.getInt(CarelevoIntPreferenceKey.CARELEVO_LOW_INSULIN_EXPIRATION_REMINDER_HOURS.key, 30)
 
         val requestModel = CarelevoUserSettingInfoRequestModel(
             lowInsulinNoticeAmount = lowInsulinNoticeAmount,
