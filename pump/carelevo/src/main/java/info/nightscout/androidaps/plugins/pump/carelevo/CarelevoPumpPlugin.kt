@@ -315,6 +315,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::updateMaxBolusDose] response success")
                     }
 
@@ -349,6 +350,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::updateLowInsulinNoticeAmount] response success")
                     }
 
@@ -380,6 +382,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::updatePatchExpiredThreshold] response success")
                     }
 
@@ -409,6 +412,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::updatePatchBuzzer] response success")
                     }
 
@@ -597,6 +601,7 @@ class CarelevoPumpPlugin @Inject constructor(
         val working = carelevoPatch.isWorking
 
         val result = connected || working
+
         return result
     }
 
@@ -636,6 +641,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::getPumpState] response success")
                     }
 
@@ -696,6 +702,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .doOnSuccess { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response success")
                         carelevoPatch.setProfile(profile)
                         uiInteraction.addNotificationValidFor(Notification.PROFILE_SET_OK, rh.gs(app.aaps.core.ui.R.string.profile_set_ok), Notification.INFO, 60)
@@ -727,7 +734,16 @@ class CarelevoPumpPlugin @Inject constructor(
     }
 
     override fun lastDataTime(): Long {
-        return _lastDateTime
+        val patchState = carelevoPatch.patchState.value?.getOrNull()
+
+        val lastDateTime = when (patchState) {
+            is PatchState.ConnectedBooted,
+            is PatchState.NotConnectedNotBooting -> System.currentTimeMillis()
+            else -> _lastDateTime
+        }
+
+        aapsLogger.debug(LTag.CORE, "[CarelevoPumpPlugin::lastDataTime] Last connection: $patchState, : " + dateUtil.dateAndTimeString(lastDateTime))
+        return lastDateTime
     }
 
     override val baseBasalRate: Double
@@ -834,6 +850,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::handleFinishImmeBolus] response success")
                     }
 
@@ -857,6 +874,7 @@ class CarelevoPumpPlugin @Inject constructor(
             .subscribe { response ->
                 when (response) {
                     is ResponseResult.Success -> {
+                        _lastDateTime = System.currentTimeMillis()
                         val result = response.data as CancelBolusInfusionResponseModel
                         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::stopBolusDelivering] response success result : $result")
                         rxBus.send(EventOverviewBolusProgress.apply {
