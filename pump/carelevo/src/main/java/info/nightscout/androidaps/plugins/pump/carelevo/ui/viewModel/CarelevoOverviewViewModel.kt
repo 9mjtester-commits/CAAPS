@@ -80,7 +80,7 @@ class CarelevoOverviewViewModel @Inject constructor(
     private val _bluetoothState = MutableLiveData<DeviceModuleState?>()
     val bluetoothState: LiveData<DeviceModuleState?> get() = _bluetoothState
 
-    private val _patchState = MutableLiveData<PatchState?>()
+    private val _patchState = MutableLiveData<PatchState>(PatchState.NotConnectedNotBooting)
     val patchState: LiveData<PatchState?> get() = _patchState
 
     private val _serialNumber = MutableLiveData<String>()
