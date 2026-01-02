@@ -13,6 +13,7 @@ import android.graphics.drawable.AnimationDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
@@ -597,8 +598,8 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
         val lastRun = loop.lastRun
         val resultAvailable =
             lastRun != null &&
-            (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
-            lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
+                (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
+                lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
 
         runOnUiThread {
             _binding ?: return@runOnUiThread
