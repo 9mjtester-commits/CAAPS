@@ -102,10 +102,12 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.jvm.optionals.getOrNull
+import kotlin.math.min
 
 @Singleton
 class CarelevoPumpPlugin @Inject constructor(
@@ -167,9 +169,11 @@ class CarelevoPumpPlugin @Inject constructor(
     private var _pumpType: PumpType = PumpType.CAREMEDI_CARELEVO
     private val _pumpDescription = PumpDescription().fillFor(_pumpType)
     private var isImmeBolusStop = false
+    private var isBolusStopFailed = false
 
     @Inject @Named("characterTx") lateinit var txUuid: UUID
     private val reconnectDisposable = CompositeDisposable()
+    private var monitorDisposable: Disposable? = null
 
     override fun onStart() {
         super.onStart()
@@ -602,7 +606,9 @@ class CarelevoPumpPlugin @Inject constructor(
 
         val result = connected || working
 
-        return result
+        val address = carelevoPatch.patchInfo.value?.getOrNull()?.address?.uppercase() ?: return false
+
+        return carelevoPatch.isBleConnectedNow(address)
     }
 
     override fun isConnecting(): Boolean {
@@ -695,36 +701,42 @@ class CarelevoPumpPlugin @Inject constructor(
             }
         }
 
-        return updateBasalProgramUseCase.execute(SetBasalProgramRequestModel(profile))
-            .observeOn(aapsSchedulers.main)
-            .subscribeOn(aapsSchedulers.io)
-            .timeout(10000L, TimeUnit.MILLISECONDS)
-            .doOnSuccess { response ->
-                when (response) {
-                    is ResponseResult.Success -> {
-                        _lastDateTime = System.currentTimeMillis()
-                        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response success")
-                        carelevoPatch.setProfile(profile)
-                        uiInteraction.addNotificationValidFor(Notification.PROFILE_SET_OK, rh.gs(app.aaps.core.ui.R.string.profile_set_ok), Notification.INFO, 60)
-                        result.success = true
-                        result.enacted = true
-                    }
+        return try {
+            updateBasalProgramUseCase.execute(SetBasalProgramRequestModel(profile))
+                .subscribeOn(aapsSchedulers.io)
+                .timeout(10, TimeUnit.SECONDS)
+                .blockingGet()   // <- 여기서 timeout은 throw 됨
+                .let { response ->
+                    when (response) {
+                        is ResponseResult.Success -> {
+                            _lastDateTime = System.currentTimeMillis()
+                            carelevoPatch.setProfile(profile)
 
-                    is ResponseResult.Error -> {
-                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response error : ${response.e}")
-                    }
+                            uiInteraction.addNotificationValidFor(
+                                Notification.PROFILE_SET_OK,
+                                rh.gs(app.aaps.core.ui.R.string.profile_set_ok),
+                                Notification.INFO, 60
+                            )
 
-                    else -> {
-                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response failed")
+                            result.success = true
+                            result.enacted = true
+                        }
+                        is ResponseResult.Error -> {
+                            aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] error: ${response.e}")
+                        }
+                        else -> {
+                            aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response failed")
+                        }
                     }
+                    result
                 }
-            }.doOnError {
-                result.success = false
-                result.enacted = false
-            }.map {
-                result
-            }
-            .blockingGet()
+
+        } catch (e: Throwable) {
+            aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] timeout or exception: $e")
+            result.success = false
+            result.enacted = false
+            return result
+        }
     }
 
     override fun isThisProfileSet(profile: Profile): Boolean {
@@ -733,7 +745,14 @@ class CarelevoPumpPlugin @Inject constructor(
         return checkResult
     }
 
-    override fun lastDataTime(): Long {
+    override val lastDataTime: Long
+        get() = lastDataTime()
+    override val lastBolusTime: Long?
+        get() = null
+    override val lastBolusAmount: Double?
+        get() = null
+
+    fun lastDataTime(): Long {
         val patchState = carelevoPatch.patchState.value?.getOrNull()
 
         val lastDateTime = when (patchState) {
@@ -763,7 +782,7 @@ class CarelevoPumpPlugin @Inject constructor(
         require(detailedBolusInfo.carbs == 0.0) { detailedBolusInfo.toString() }
         require(detailedBolusInfo.insulin > 0) { detailedBolusInfo.toString() }
 
-        val result = instantiator.providePumpEnactResult()
+        val result = pumpEnactResultProvider.get()
         if (!carelevoPatch.isBluetoothEnabled()) {
             return result
         }
@@ -772,73 +791,108 @@ class CarelevoPumpPlugin @Inject constructor(
         }
         isImmeBolusStop = false
         val actionId = (carelevoPatch.patchInfo.value?.getOrNull()?.bolusActionSeq ?: 0) + 1
-        return startImmeBolusInfusionUseCase.execute(
-            StartImmeBolusInfusionRequestModel(
-                actionSeq = actionId,
-                volume = detailedBolusInfo.insulin
+
+        return try {
+            startImmeBolusInfusionUseCase.execute(
+                StartImmeBolusInfusionRequestModel(
+                    actionSeq = actionId,
+                    volume = detailedBolusInfo.insulin
+                )
             )
+                .timeout(30, TimeUnit.SECONDS)
+                .observeOn(aapsSchedulers.io)
+                .subscribeOn(aapsSchedulers.io)
+                .doOnSuccess { response -> handleBolusSuccess(response, detailedBolusInfo, result) }
+                .doOnError { e -> handleBolusError(e, result) }
+                .map { result }
+                .blockingGet()
+
+        } catch (e: Throwable) {
+            // --- timeout, dispose, connection lost 등 모든 예외 처리 ---
+            aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] timeout or unexpected error: $e")
+
+            result.success = false
+            result.enacted = false
+            result.bolusDelivered = 0.0
+            result
+        }
+    }
+
+    private fun handleBolusSuccess(
+        response: ResponseResult<*>,
+        detailedInfo: DetailedBolusInfo,
+        result: PumpEnactResult
+    ) {
+        if (response !is ResponseResult.Success) return
+
+        val data = response.data as StartImmeBolusInfusionResponseModel
+
+        _lastDateTime = System.currentTimeMillis()
+        val totalSec = data.expectSec
+
+        val tr = EventOverviewBolusProgress.Treatment(
+            insulin = 0.0,
+            carbs = 0,
+            isSMB = (detailedInfo.bolusType == BS.Type.SMB),
+            id = detailedInfo.id
         )
-            .observeOn(aapsSchedulers.io)
-            .subscribeOn(aapsSchedulers.io)
-            .doOnSuccess { response ->
-                when (response) {
-                    is ResponseResult.Success -> {
-                        val responseResult = response.data as StartImmeBolusInfusionResponseModel
-                        _lastDateTime = System.currentTimeMillis()
 
-                        val totalSec = responseResult.expectSec
-                        val tr = EventOverviewBolusProgress.Treatment(0.0, 0, detailedBolusInfo.bolusType == BS.Type.SMB, detailedBolusInfo.id)
-                        (0..totalSec).forEach {
-                            if (!isImmeBolusStop) {
-                                if (it == totalSec) {
-                                    rxBus.send(EventOverviewBolusProgress.apply {
-                                        status = rh.gs(app.aaps.core.ui.R.string.bolus_delivered_successfully, detailedBolusInfo.insulin)
-                                        percent = 100
-                                    })
-                                    pumpSync.syncBolusWithPumpId(
-                                        detailedBolusInfo.timestamp,
-                                        detailedBolusInfo.insulin,
-                                        detailedBolusInfo.bolusType,
-                                        dateUtil.now(),
-                                        PumpType.CAREMEDI_CARELEVO,
-                                        serialNumber()
-                                    )
-                                    handleFinishImmeBolus()
-                                } else {
-                                    // delay(1000)
-                                    SystemClock.sleep(1000)
-                                    val delivering = (detailedBolusInfo.insulin / totalSec) * it
-                                    val percentage = kotlin.math.min((delivering / detailedBolusInfo.insulin * 100).toInt(), 100)
-                                    rxBus.send(EventOverviewBolusProgress.apply {
-                                        status = rh.gs(app.aaps.core.ui.R.string.bolus_delivering, delivering)
-                                        percent = percentage
-                                        t = tr
-                                    })
-                                }
-                            } else {
-                                return@forEach
-                            }
-                        }
-                        result.success = true
-                        result.enacted = true
-                        result.bolusDelivered = detailedBolusInfo.insulin
-                    }
+        (0..totalSec).forEach {
+            if (isImmeBolusStop) return
 
-                    is ResponseResult.Error -> {
-                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] response error : ${response.e}")
-                    }
+            if (it == totalSec) {
+                rxBus.send(EventOverviewBolusProgress.apply {
+                    status = rh.gs(app.aaps.core.ui.R.string.bolus_delivered_successfully, detailedInfo.insulin)
+                    percent = 100
+                })
 
-                    else -> {
-                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] response failed")
-                    }
+                pumpSync.syncBolusWithPumpId(
+                    detailedInfo.timestamp,
+                    detailedInfo.insulin,
+                    detailedInfo.bolusType,
+                    dateUtil.now(),
+                    PumpType.CAREMEDI_CARELEVO,
+                    serialNumber()
+                )
+
+                if (detailedInfo.carbs > 0) {
+                    pumpSync.syncCarbsWithTimestamp(
+                        detailedInfo.carbsTimestamp ?: detailedInfo.timestamp,
+                        detailedInfo.carbs,
+                        null,
+                        PumpType.DANA_R,
+                        serialNumber()
+                    )
                 }
-            }.doOnError {
-                result.success = false
-                result.enacted = false
-                result.bolusDelivered = 0.0
-            }.map {
-                result
-            }.blockingGet()
+
+                handleFinishImmeBolus()
+            } else {
+                SystemClock.sleep(1000)
+                val delivered = (detailedInfo.insulin / totalSec) * it
+                val percent = min((delivered / detailedInfo.insulin * 100).toInt(), 100)
+
+                rxBus.send(EventOverviewBolusProgress.apply {
+                    status = rh.gs(app.aaps.core.ui.R.string.bolus_delivering, delivered)
+                    this.percent = percent
+                    t = tr
+                })
+            }
+        }
+
+        result.success = true
+        result.enacted = true
+        result.bolusDelivered = detailedInfo.insulin
+    }
+
+    private fun handleBolusError(e: Throwable, result: PumpEnactResult) {
+        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] error: $e")
+
+        result.success = false
+        result.enacted = false
+        result.bolusDelivered = 0.0
+        if (e is TimeoutException) {
+            result.comment(rh.gs(R.string.alarm_feat_msg_check_patch_connect))
+        }
 
     }
 

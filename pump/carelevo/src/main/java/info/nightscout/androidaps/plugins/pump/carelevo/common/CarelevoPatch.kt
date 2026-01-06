@@ -158,6 +158,10 @@ class CarelevoPatch @Inject constructor(
         return address != null && validAddress != null && isConnected && address.lowercase() == validAddress.lowercase()
     }
 
+    fun isBleConnectedNow(address: String): Boolean {
+        return bleController.isConnectedNow(address)
+    }
+
     fun getPatchInfoAddress(): String? {
         return patchInfo.value?.getOrNull()?.address
     }

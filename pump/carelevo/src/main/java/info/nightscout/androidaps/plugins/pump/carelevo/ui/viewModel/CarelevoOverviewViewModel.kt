@@ -582,7 +582,7 @@ class CarelevoOverviewViewModel @Inject constructor(
     }
 
     private fun cancelTempBasal(): Boolean {
-        return commandQueue.cancelTempBasal(true, null)
+        return commandQueue.cancelTempBasal(true, callback = null)
     }
 
     private fun cancelExtendBolus(): Boolean {
