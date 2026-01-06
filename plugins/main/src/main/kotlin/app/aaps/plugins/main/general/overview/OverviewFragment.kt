@@ -596,16 +596,21 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
 
         // **** Temp button ****
         val lastRun = loop.lastRun
-        val resultAvailable =
+        val closedLoopEnabled = constraintChecker.isClosedLoopAllowed()
+
+        val showAcceptButton = !closedLoopEnabled.value() && // Open mode needed
             lastRun != null &&
-                (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
-                lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
+            (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
+            lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
 
         runOnUiThread {
             _binding ?: return@runOnUiThread
-            if (resultAvailable && pump.isInitialized() && loop.runningMode == RM.Mode.OPEN_LOOP && (loop as PluginBase).isEnabled()) {
+            if (showAcceptButton && pump.isInitialized() && !loop.runningMode.isSuspended() && (loop as PluginBase).isEnabled()) {
                 binding.buttonsLayout.acceptTempButton.visibility = View.VISIBLE
                 binding.buttonsLayout.acceptTempButton.text = "${rh.gs(R.string.set_basal_question)}\n${lastRun.constraintsProcessed?.resultAsString()}"
+                if (lastRun != null) {
+                    binding.buttonsLayout.acceptTempButton.text = "${rh.gs(R.string.set_basal_question)}\n${lastRun.constraintsProcessed?.resultAsString()}"
+                }
             } else {
                 binding.buttonsLayout.acceptTempButton.visibility = View.GONE
             }
