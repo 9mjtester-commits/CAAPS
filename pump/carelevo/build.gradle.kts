@@ -30,10 +30,7 @@ dependencies {
     api(libs.io.reactivex.rxjava3.rxandroid)
     api(libs.com.polidea.rxandroidble3)
     api(libs.com.jakewharton.rx3.replaying.share)
-    implementation(libs.androidx.appcompat.v170)
     implementation(libs.com.google.android.material)
-    implementation(libs.activity)
-    implementation(libs.androidx.constraintlayout.v214)
 
     ksp(libs.com.google.dagger.compiler)
     ksp(libs.com.google.dagger.android.processor)

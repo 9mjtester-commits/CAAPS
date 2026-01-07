@@ -13,7 +13,6 @@ import android.graphics.drawable.AnimationDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.Log
 import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
@@ -596,21 +595,16 @@ class OverviewFragment : DaggerFragment(), View.OnClickListener, OnLongClickList
 
         // **** Temp button ****
         val lastRun = loop.lastRun
-        val closedLoopEnabled = constraintChecker.isClosedLoopAllowed()
-
-        val showAcceptButton = !closedLoopEnabled.value() && // Open mode needed
+        val resultAvailable =
             lastRun != null &&
-            (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
-            lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
+                (lastRun.lastOpenModeAccept == 0L || lastRun.lastOpenModeAccept < lastRun.lastAPSRun) &&// never accepted or before last result
+                lastRun.constraintsProcessed?.isChangeRequested == true // change is requested
 
         runOnUiThread {
             _binding ?: return@runOnUiThread
-            if (showAcceptButton && pump.isInitialized() && !loop.runningMode.isSuspended() && (loop as PluginBase).isEnabled()) {
+            if (resultAvailable && pump.isInitialized() && loop.runningMode == RM.Mode.OPEN_LOOP && (loop as PluginBase).isEnabled()) {
                 binding.buttonsLayout.acceptTempButton.visibility = View.VISIBLE
                 binding.buttonsLayout.acceptTempButton.text = "${rh.gs(R.string.set_basal_question)}\n${lastRun.constraintsProcessed?.resultAsString()}"
-                if (lastRun != null) {
-                    binding.buttonsLayout.acceptTempButton.text = "${rh.gs(R.string.set_basal_question)}\n${lastRun.constraintsProcessed?.resultAsString()}"
-                }
             } else {
                 binding.buttonsLayout.acceptTempButton.visibility = View.GONE
             }

@@ -143,6 +143,12 @@ android {
         dataBinding = true
         buildConfig = true
     }
+
+    packaging {
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 allprojects {
