@@ -1,5 +1,6 @@
 package info.nightscout.androidaps.plugins.pump.carelevo
 
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.content.Context
@@ -168,7 +169,7 @@ class CarelevoPumpPlugin @Inject constructor(
     private var isImmeBolusStop = false
 
     @Inject @Named("characterTx") lateinit var txUuid: UUID
-    private val reconnectDisposable = CompositeDisposable()
+    private var reconnectDisposable = CompositeDisposable()
 
     override fun onStart() {
         super.onStart()
@@ -616,13 +617,27 @@ class CarelevoPumpPlugin @Inject constructor(
         return false
     }
 
+    var isTryReconnected = false
     override fun connect(reason: String) {
         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::connect] connect called : $reason")
         _lastDateTime = System.currentTimeMillis()
+
+        val patchState = carelevoPatch.patchState.value?.getOrNull()
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::disconnect] disconnect called : $reason, patchState : $patchState")
+
+        if(reason == "Connection needed") {
+            if (patchState == PatchState.NotConnectedBooted) {
+                startReconnect()
+            }
+        }
     }
 
     override fun disconnect(reason: String) {
-        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::disconnect] disconnect called : $reason")
+        val patchState = carelevoPatch.patchState.value?.getOrNull()
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::disconnect] disconnect called : $reason, patchState : $patchState")
+        if (patchState == PatchState.NotConnectedBooted) {
+            //startReconnect()
+        }
     }
 
     override fun stopConnecting() {
@@ -796,7 +811,7 @@ class CarelevoPumpPlugin @Inject constructor(
                     volume = detailedBolusInfo.insulin
                 )
             )
-                .timeout(30, TimeUnit.SECONDS)
+                .timeout(20, TimeUnit.SECONDS)
                 .observeOn(aapsSchedulers.io)
                 .subscribeOn(aapsSchedulers.io)
                 .doOnSuccess { response -> handleBolusSuccess(response, detailedBolusInfo, result) }
@@ -805,7 +820,6 @@ class CarelevoPumpPlugin @Inject constructor(
                 .blockingGet()
 
         } catch (e: Throwable) {
-            // --- timeout, dispose, connection lost 등 모든 예외 처리 ---
             aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] timeout or unexpected error: $e")
 
             result.success = false
@@ -820,6 +834,7 @@ class CarelevoPumpPlugin @Inject constructor(
         detailedInfo: DetailedBolusInfo,
         result: PumpEnactResult
     ) {
+        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::deliverTreatment] Success: $detailedInfo")
         if (response !is ResponseResult.Success) return
 
         val data = response.data as StartImmeBolusInfusionResponseModel
@@ -1272,68 +1287,102 @@ class CarelevoPumpPlugin @Inject constructor(
         return false
     }
 
+    @SuppressLint("CheckResult")
     private fun startReconnect() {
+        reconnectDisposable.clear()
+
         if (!carelevoPatch.isBluetoothEnabled()) {
+            aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] bluetooth disabled")
             return
         }
 
         val address = carelevoPatch.patchInfo.value?.getOrNull()?.address?.uppercase() ?: return
 
-        reconnectDisposable += bleController.execute(Connect(address))
-            .observeOn(aapsSchedulers.io)
-            .subscribe { result ->
-                when (result) {
-                    is CommandResult.Success -> {
-                        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect result is success")
-                    }
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] start reconnect : $address")
 
-                    else -> {
-                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect result is failed")
+        isTryReconnected = true
+        reconnectDisposable.add(
+            bleController.execute(Connect(address))
+                .subscribeOn(aapsSchedulers.io)
+                .observeOn(aapsSchedulers.io)
+                .subscribe(
+                    { result ->
+                        isTryReconnected = false
+                        when (result) {
+                            is CommandResult.Success -> {
+                                aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect success")
+                            }
+
+                            else -> {
+                                aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect failed")
+                                stopReconnect()
+                            }
+                        }
+                    },
+                    { e ->
+                        isTryReconnected = false
+                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect error : $e")
                         stopReconnect()
                     }
-                }
-            }
+                )
+        )
 
-        reconnectDisposable += carelevoPatch.btState
-            .observeOn(aapsSchedulers.io)
-            .timeout(10000L, TimeUnit.MILLISECONDS)
-            .doOnError {
-                aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] reconnect time out : $it")
-                stopReconnect()
-            }
-            .subscribe { btState ->
-                btState.getOrNull()?.let { state ->
-                    if (state.shouldBeConnected()) {
-                        bleController.execute(DiscoveryService(address))
-                            .blockingGet()
-                            .takeIf { it !is CommandResult.Success }
-                            ?.let { stopReconnect() }
-                    }
+        reconnectDisposable.add(
+            carelevoPatch.btState
+                .subscribeOn(aapsSchedulers.io)
+                .observeOn(aapsSchedulers.io)
+                .timeout(10, TimeUnit.SECONDS)
+                .subscribe(
+                    { btState ->
+                        btState.getOrNull()?.let { state ->
+                            when {
+                                state.shouldBeConnected() -> {
+                                    aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] state=CONNECTED")
 
-                    if (state.shouldBeDiscovered()) {
-                        bleController.execute(EnableNotifications(address, txUuid))
-                            .blockingGet()
-                            .takeIf { it !is CommandResult.Success }
-                            ?.let { stopReconnect() }
-                        Thread.sleep(2000)
-                        reconnectDisposable.clear()
-                        reconnectDisposable.dispose()
-                    }
-                    if (state.isDiscoverCleared()) {
+                                    bleController.execute(DiscoveryService(address))
+                                        .subscribeOn(aapsSchedulers.io)
+                                        .observeOn(aapsSchedulers.io)
+                                        .subscribe { result ->
+                                            if (result !is CommandResult.Success) {
+                                                stopReconnect()
+                                            }
+                                        }
+                                }
+
+                                state.shouldBeDiscovered() -> {
+                                    aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] state=DISCOVERED")
+                                    bleController.execute(EnableNotifications(address, txUuid))
+                                        .subscribeOn(aapsSchedulers.io)
+                                        .observeOn(aapsSchedulers.io)
+                                        .subscribe { result ->
+                                            if (result !is CommandResult.Success) {
+                                                stopReconnect()
+                                            } else {
+                                                aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] reconnect finished")
+                                                stopReconnect()
+                                            }
+                                        }
+                                }
+
+                                state.isDiscoverCleared() ||
+                                    state.isAbnormalBondingFailed() ||
+                                    state.isReInitialized() -> {
+                                    aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] abnormal state : $state")
+                                    stopReconnect()
+                                }
+                            }
+                        }
+                    },
+                    { e ->
+                        aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] reconnect timeout/error : $e")
                         stopReconnect()
                     }
-                    if (state.isAbnormalBondingFailed()) {
-                        stopReconnect()
-                    }
-                    if (state.isReInitialized()) {
-                        stopReconnect()
-                    }
-
-                }
-            }
+                )
+        )
     }
 
     private fun stopReconnect() {
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::stopReconnect] stop reconnect")
         reconnectDisposable.clear()
     }
 

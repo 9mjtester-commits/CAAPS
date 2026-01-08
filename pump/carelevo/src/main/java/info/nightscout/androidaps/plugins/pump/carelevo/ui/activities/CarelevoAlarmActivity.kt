@@ -31,7 +31,8 @@ class CarelevoAlarmActivity : TranslatedDaggerAppCompatActivity() {
     private val requestBtLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             viewModel.alarmInfo?.let {
-                viewModel.triggerEvent(AlarmEvent.ClearAlarm(it))
+                //viewModel.triggerEvent(AlarmEvent.ClearAlarm(it))
+                finish()
             }
         }
     }
