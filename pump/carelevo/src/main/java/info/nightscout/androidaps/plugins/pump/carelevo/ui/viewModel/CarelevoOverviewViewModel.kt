@@ -24,8 +24,6 @@ import info.nightscout.androidaps.plugins.pump.carelevo.common.model.UiState
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.ResponseResult
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.infusion.CarelevoInfusionInfoDomainModel
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.patch.CarelevoPatchInfoDomainModel
-import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.alarm.CarelevoAlarmInfoUseCase
-import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.basal.CarelevoSetBasalProgramUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.infusion.CarelevoDeleteInfusionInfoUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.infusion.CarelevoPumpResumeUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.infusion.CarelevoPumpStopUseCase
@@ -73,7 +71,6 @@ class CarelevoOverviewViewModel @Inject constructor(
     private val pumpStopUseCase: CarelevoPumpStopUseCase,
     private val pumpResumeUseCase: CarelevoPumpResumeUseCase,
     private val requestPatchInfusionInfoUseCase: CarelevoRequestPatchInfusionInfoUseCase,
-    private val alarmUseCase: CarelevoAlarmInfoUseCase,
     private val carelevoDeleteInfusionInfoUseCase: CarelevoDeleteInfusionInfoUseCase
 ) : ViewModel() {
 
@@ -343,23 +340,6 @@ class CarelevoOverviewViewModel @Inject constructor(
             .subscribe {
                 _basalRate.value = it?.getOrNull()?.getBasal() ?: 0.0
             }
-    }
-
-    fun loadUnacknowledgedAlarms() {
-        compositeDisposable += alarmUseCase.getAlarmsOnce()
-            .subscribeOn(aapsSchedulers.io)
-            .observeOn(aapsSchedulers.main)
-            .subscribe(
-                { optionalList ->
-                    val alarms = optionalList.orElse(emptyList())
-                        .filter { !it.isAcknowledged }
-                        .sortedBy { it.createdAt }
-                    aapsLogger.debug(LTag.PUMP, "[CarelevoOverviewViewModel::loadUnacknowledgedAlarms] alarms : $alarms")
-                    _hasUnacknowledgedAlarms.value = alarms.isNotEmpty()
-
-                }, { e ->
-                    aapsLogger.debug(LTag.PUMP, "[CarelevoOverviewViewModel::loadUnacknowledgedAlarms] error : $e")
-                })
     }
 
     fun initUnacknowledgedAlarms() {

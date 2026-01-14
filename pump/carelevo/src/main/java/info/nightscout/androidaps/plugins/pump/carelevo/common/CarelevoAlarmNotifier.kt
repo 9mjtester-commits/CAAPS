@@ -4,22 +4,23 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.app.TaskStackBuilder
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
 import android.util.Log
 import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
+import androidx.core.text.HtmlCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import app.aaps.core.interfaces.rx.AapsSchedulers
+import app.aaps.core.interfaces.ui.UiInteraction
 import info.nightscout.androidaps.plugins.pump.carelevo.R
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.alarm.CarelevoAlarmInfo
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.type.AlarmCause
-import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.alarm.CarelevoAlarmInfoUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.ui.activities.CarelevoAlarmActivity
 import info.nightscout.androidaps.plugins.pump.carelevo.ui.ext.transformNotificationStringResources
+import info.nightscout.androidaps.plugins.pump.carelevo.ui.ext.transformStringResources
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.kotlin.plusAssign
 import javax.inject.Inject
@@ -29,27 +30,27 @@ import javax.inject.Singleton
 class CarelevoAlarmNotifier @Inject constructor(
     private val context: Context,
     private val aapsSchedulers: AapsSchedulers,
-    private val alarmUseCase: CarelevoAlarmInfoUseCase
+    private val uiInteraction: UiInteraction,
+    private val alarmActionHandler: CarelevoAlarmActionHandler
 ) {
 
     private val disposables = CompositeDisposable()
     private val channelId = "carelevo_alarm_channel"
 
-    fun startObserving() {
+    fun startObserving(
+        onAlarmsUpdated: (List<CarelevoAlarmInfo>) -> Unit
+    ) {
         createNotificationChannel()
-        disposables += alarmUseCase.observeAlarms()
+        disposables += alarmActionHandler.observeAlarms()
             .subscribeOn(aapsSchedulers.io)
             .observeOn(aapsSchedulers.main)
-            .subscribe({ optionalList ->
-                           val alarms = optionalList.orElse(emptyList())
-                           Log.d("AlarmObserver", "observeAlarms: $alarms")
-                           if (alarms.isNotEmpty()) {
-                               if (isInForeground) {
-                                   showAlarmScreen()
-                               } else {
-                                   alarms.forEach { newAlarm ->
-                                       showNotification(newAlarm)
-                                   }
+            .subscribe({ alarms ->
+                           Log.d("AlarmObserver", "CarelevoAlarmNotifier observeAlarms: $alarms")
+                           if (isInForeground) {
+                               onAlarmsUpdated(alarms)
+                           } else {
+                               alarms.forEach { alarm ->
+                                   showNotification(alarm)
                                }
                            }
                        }, { e ->
@@ -57,18 +58,54 @@ class CarelevoAlarmNotifier @Inject constructor(
                        })
     }
 
+    fun getAlarmsOnce(
+        includeUnacknowledged: Boolean = true,
+        onAlarmsLoaded: (List<CarelevoAlarmInfo>) -> Unit
+    ) {
+        disposables += alarmActionHandler
+            .getAlarmsOnce(includeUnacknowledged)
+            .subscribeOn(aapsSchedulers.io)
+            .observeOn(aapsSchedulers.main)
+            .subscribe({ alarms ->
+                           Log.d("AlarmObserver", "CarelevoAlarmNotifier getAlarmsOnce: $alarms")
+                           onAlarmsLoaded(alarms)
+                       }, { e ->
+                           Log.e("AlarmObserver", "getAlarmsOnce error", e)
+                       })
+    }
+
+    fun showTopNotification(alarms: List<CarelevoAlarmInfo>) {
+        val newAlarm = alarms.last()
+        val (titleRes, descRes, btnRes) = newAlarm.cause.transformStringResources()
+
+        val descArgs = buildDescArgsFor(newAlarm)
+        val desc = buildDescription(descRes, descArgs)
+
+        uiInteraction.addNotificationWithAction(
+            id = app.aaps.core.interfaces.notifications.Notification.EOFLOW_PATCH_ALERTS + (newAlarm.alarmType.code * 1000) + (newAlarm.cause.code ?: 0),
+            text = context.getString(titleRes) + "\n" + HtmlCompat.fromHtml(desc, HtmlCompat.FROM_HTML_MODE_LEGACY),
+            level = app.aaps.core.interfaces.notifications.Notification.NORMAL,
+            buttonText = btnRes,
+            action = {
+                //viewModel.triggerEvent(AlarmEvent.ClearAlarm(info = alarm))
+            },
+            validityCheck = null,
+            soundId = app.aaps.core.ui.R.raw.error,
+        )
+    }
+
     fun stopObserving() {
         disposables.clear()
     }
 
-    private fun showNotification(alarm: CarelevoAlarmInfo) {
+    fun showNotification(alarm: CarelevoAlarmInfo) {
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val (titleRes, descRes, _) = alarm.cause.transformNotificationStringResources()
         val description = buildNotificationDescription(alarm, descRes)
 
-        val contentPendingIntent = createAlarmActivityPendingIntent(alarm)
+        val contentPendingIntent = createAlarmActivityPendingIntent()
 
         val notification = buildNotification(
             title = context.getString(titleRes),
@@ -145,25 +182,24 @@ class CarelevoAlarmNotifier @Inject constructor(
             .build()
     }
 
-    private fun createAlarmActivityPendingIntent(alarm: CarelevoAlarmInfo): PendingIntent {
-        val requestCode = alarm.alarmId.hashCode()
-
-        val intent = Intent(context, CarelevoAlarmActivity::class.java).apply {
-            /*          action = "OPEN_ALARM_${alarm.alarmId}"
-                      putExtra("alarm_id", alarm.alarmId)
-                      putExtra("alarm_cause", alarm.cause.name)
-                      putExtra("alarm_value", alarm.value ?: 0)*/
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-
-        val stackBuilder = TaskStackBuilder.create(context).apply {
-            addNextIntentWithParentStack(intent)
-        }
+    private fun createAlarmActivityPendingIntent(): PendingIntent {
+        val launchIntent =
+            context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?.apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                    )
+                }
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
 
-        return stackBuilder.getPendingIntent(requestCode, flags)
-            ?: PendingIntent.getActivity(context, requestCode, intent, flags)
+        return PendingIntent.getActivity(
+            context,
+            0,
+            launchIntent,
+            flags
+        )
     }
 
     private fun createNotificationChannel() {
@@ -195,6 +231,51 @@ class CarelevoAlarmNotifier @Inject constructor(
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
         context.startActivity(intent)
+    }
+
+    private fun buildDescArgsFor(alarm: CarelevoAlarmInfo): List<String> = when (alarm.cause) {
+        AlarmCause.ALARM_NOTICE_LOW_INSULIN,
+        AlarmCause.ALARM_ALERT_OUT_OF_INSULIN -> {
+            listOf((alarm.value ?: 0).toString())
+        }
+
+        AlarmCause.ALARM_NOTICE_PATCH_EXPIRED -> {
+            val totalHours = alarm.value ?: 0
+            val (days, hours) = splitDaysAndHours(totalHours)
+            listOf(days.toString(), hours.toString())
+        }
+
+        AlarmCause.ALARM_NOTICE_BG_CHECK -> {
+            val totalMinutes = alarm.value ?: 0
+            listOf(formatBgCheckDuration(totalMinutes))
+        }
+
+        else -> emptyList()
+    }
+
+    private fun buildDescription(@androidx.annotation.StringRes descRes: Int?, args: List<String>): String {
+        return descRes?.let { resId ->
+            if (args.isEmpty()) context.getString(resId) else context.getString(resId, *args.toTypedArray())
+        } ?: ""
+    }
+
+    private fun splitDaysAndHours(totalHours: Int): Pair<Int, Int> {
+        val days = totalHours / 24
+        val hours = totalHours % 24
+        return days to hours
+    }
+
+    private fun formatBgCheckDuration(totalMinutes: Int): String {
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        return when {
+            hours > 0 && minutes > 0 ->
+                context.getString(R.string.common_label_unit_value_duration_hour_and_minute, hours, minutes)
+            hours > 0 ->
+                context.getString(R.string.common_label_unit_value_duration_hour, hours)
+            else ->
+                context.getString(R.string.common_label_unit_value_minute, minutes)
+        }
     }
 
     val isInForeground: Boolean

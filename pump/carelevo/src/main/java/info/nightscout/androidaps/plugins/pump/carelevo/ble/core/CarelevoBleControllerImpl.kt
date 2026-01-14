@@ -37,6 +37,14 @@ class CarelevoBleControllerImpl @Inject constructor(
         startCommandExecutor()
     }
 
+    override fun registerPeripheralInfo() {
+        btManager.registerPeripheralInfoRegistered()
+    }
+
+    override fun unRegisterPeripheralInfo() {
+        btManager.unRegisterPeripheralInfoRegistered()
+    }
+
     override fun isBluetoothEnabled(): Boolean {
         return btManager.isBluetoothEnabled()
     }

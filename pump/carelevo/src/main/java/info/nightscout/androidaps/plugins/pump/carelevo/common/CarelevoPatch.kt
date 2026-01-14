@@ -309,6 +309,7 @@ class CarelevoPatch @Inject constructor(
 
     fun flushPatchInformation() {
         bleController.clearGatt()
+        bleController.unRegisterPeripheralInfo()
     }
 
     private fun observePatch() {

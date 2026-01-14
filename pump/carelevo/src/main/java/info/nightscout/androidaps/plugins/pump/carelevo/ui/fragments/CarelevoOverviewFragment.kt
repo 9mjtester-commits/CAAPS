@@ -54,7 +54,6 @@ class CarelevoOverviewFragment : CarelevoBaseFragment<FragmentCarelevoOverviewBi
 
     override fun onResume() {
         super.onResume()
-        viewModel.loadUnacknowledgedAlarms()
         viewModel.refreshPatchInfusionInfo()
     }
 
@@ -239,7 +238,7 @@ class CarelevoOverviewFragment : CarelevoBaseFragment<FragmentCarelevoOverviewBi
                     onClickListener = {
                         viewModel.startPumpResume()
                     }
-            )).build().show(childFragmentManager, "dialog_carelevo_discard_confirm")
+                )).build().show(childFragmentManager, "dialog_carelevo_discard_confirm")
 
     }
 }

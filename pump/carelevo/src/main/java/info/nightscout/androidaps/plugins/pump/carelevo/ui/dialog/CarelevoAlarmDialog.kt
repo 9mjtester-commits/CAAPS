@@ -1,30 +1,62 @@
 package info.nightscout.androidaps.plugins.pump.carelevo.ui.dialog
 
+import android.os.Bundle
+import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowManager
 import android.widget.TextView
 import androidx.annotation.ColorInt
 import androidx.annotation.DrawableRes
 import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.text.HtmlCompat
 import androidx.core.view.isVisible
-import info.nightscout.androidaps.plugins.pump.carelevo.R
+import dagger.android.support.DaggerDialogFragment
 import info.nightscout.androidaps.plugins.pump.carelevo.databinding.DialogCarelevoAlarmBinding
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.alarm.CarelevoAlarmInfo
-import info.nightscout.androidaps.plugins.pump.carelevo.domain.type.AlarmType
-import info.nightscout.androidaps.plugins.pump.carelevo.ui.base.BaseFullScreenDialog
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
-class CarelevoAlarmDialog : BaseFullScreenDialog<DialogCarelevoAlarmBinding>() {
-
-    override val layoutResId: Int = R.layout.dialog_carelevo_alarm
+class CarelevoAlarmDialog : DaggerDialogFragment() {
 
     private var title = ""
     private var content = ""
     private var alarmInfo: CarelevoAlarmInfo? = null
     private var primaryButton: Button? = null
 
-    override fun init() {
+    private var _binding: DialogCarelevoAlarmBinding? = null
+    private val binding get() = _binding!!
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater, container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+
+        dialog?.window?.requestFeature(Window.FEATURE_NO_TITLE)
+        dialog?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
+        isCancelable = false
+        dialog?.setCanceledOnTouchOutside(false)
+
+        _binding = DialogCarelevoAlarmBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        init()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        dialog?.window?.apply {
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+    }
+
+    fun init() {
         setupViews()
     }
 
@@ -40,18 +72,6 @@ class CarelevoAlarmDialog : BaseFullScreenDialog<DialogCarelevoAlarmBinding>() {
                 content
             }
             tvContent.isVisible = content.isNotBlank()
-            alarmInfo?.let {
-                val (iconRes, alarmTypeBgRes, alarmTypeStrRes) = when (it.alarmType) {
-                    AlarmType.WARNING -> Triple(R.drawable.ic_warning_80, app.aaps.core.ui.R.color.errorAlertBackground, R.string.alarm_feat_label_warning)
-                    AlarmType.ALERT -> Triple(R.drawable.ic_alert_80, app.aaps.core.ui.R.color.warningAlertBackground, R.string.alarm_feat_label_alert)
-                    AlarmType.NOTICE -> Triple(R.drawable.ic_notice_80, app.aaps.core.ui.R.color.helperProfile, R.string.alarm_feat_label_notice)
-                    else -> Triple(R.drawable.ic_notice_80, app.aaps.core.ui.R.color.helperProfile, R.string.alarm_feat_label_notice)
-                }
-                tvIcon.setBackgroundResource(iconRes)
-                tvAlarmType.setBackgroundResource(alarmTypeBgRes)
-                tvAlarmType.setText(alarmTypeStrRes)
-                tvDate.text = LocalDateTime.parse(it.createdAt).format(DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm:ss"))
-            }
 
             initButton(tvPrimaryButton, primaryButton)
         }

@@ -15,7 +15,7 @@
         <activity
             android:name=".ui.activities.CarelevoAlarmActivity"
             android:configChanges="orientation|layoutDirection|screenLayout|density|screenSize|smallestScreenSize"
-            android:theme="@style/AppTheme" />
+            android:theme="@style/AppTheme.TransparentActivity" />
     </application>
 
 </manifest>

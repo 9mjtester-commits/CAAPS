@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.IntentFilter
 import android.os.SystemClock
 import android.util.Log
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.preference.PreferenceCategory
 import androidx.preference.PreferenceManager
 import androidx.preference.PreferenceScreen
@@ -65,6 +66,9 @@ import info.nightscout.androidaps.plugins.pump.carelevo.common.keys.CarelevoIntP
 import info.nightscout.androidaps.plugins.pump.carelevo.common.model.PatchState
 import info.nightscout.androidaps.plugins.pump.carelevo.data.protocol.parser.CarelevoProtocolParserRegister
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.ResponseResult
+import info.nightscout.androidaps.plugins.pump.carelevo.domain.model.alarm.CarelevoAlarmInfo
+import info.nightscout.androidaps.plugins.pump.carelevo.domain.type.AlarmType.Companion.isCritical
+import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.alarm.CarelevoAlarmInfoUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.basal.CarelevoCancelTempBasalInfusionUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.basal.CarelevoStartTempBasalInfusionUseCase
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.basal.CarelevoUpdateBasalProgramUseCase
@@ -90,12 +94,16 @@ import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.userSetti
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.userSetting.model.CarelevoPatchBuzzRequestModel
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.userSetting.model.CarelevoPatchExpiredThresholdModifyRequestModel
 import info.nightscout.androidaps.plugins.pump.carelevo.domain.usecase.userSetting.model.CarelevoUserSettingInfoRequestModel
+import info.nightscout.androidaps.plugins.pump.carelevo.ui.base.AppForegroundObserver
 import info.nightscout.androidaps.plugins.pump.carelevo.ui.fragments.CarelevoOverviewFragment
 import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Single
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.disposables.Disposable
 import io.reactivex.rxjava3.kotlin.plusAssign
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.UUID
@@ -107,6 +115,7 @@ import javax.inject.Provider
 import javax.inject.Singleton
 import kotlin.jvm.optionals.getOrNull
 import kotlin.math.ceil
+import kotlin.math.min
 
 @Singleton
 class CarelevoPumpPlugin @Inject constructor(
@@ -145,7 +154,8 @@ class CarelevoPumpPlugin @Inject constructor(
 
     private val carelevoPatchTimeZoneUpdateUseCase: CarelevoPatchTimeZoneUpdateUseCase,
     private val carelevoPatchExpiredThresholdModifyUseCase: CarelevoPatchExpiredThresholdModifyUseCase,
-    private val carelevoPatchBuzzModifyUseCase: CarelevoPatchBuzzModifyUseCase
+    private val carelevoPatchBuzzModifyUseCase: CarelevoPatchBuzzModifyUseCase,
+    private val alarmUseCase: CarelevoAlarmInfoUseCase,
 ) : PumpPluginBase(
     PluginDescription()
         .mainType(PluginType.PUMP)
@@ -167,6 +177,7 @@ class CarelevoPumpPlugin @Inject constructor(
     private var _pumpType: PumpType = PumpType.CAREMEDI_CARELEVO
     private val _pumpDescription = PumpDescription().fillFor(_pumpType)
     private var isImmeBolusStop = false
+    private var isTryReconnected = false
 
     @Inject @Named("characterTx") lateinit var txUuid: UUID
     private var reconnectDisposable = CompositeDisposable()
@@ -287,8 +298,46 @@ class CarelevoPumpPlugin @Inject constructor(
             }
         }
 
-        carelevoAlarmNotifier.startObserving()
+        //startAlarmObserver()
+        //loadUnacknowledgedAlarms()
 
+    }
+
+    fun startAlarmObserver() {
+        aapsLogger.debug(LTag.NOTIFICATION, "startAlarmObserving:: onStart")
+
+        CoroutineScope(Dispatchers.Main).launch {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(
+                AppForegroundObserver {
+                    aapsLogger.debug(LTag.NOTIFICATION, "startAlarmObserving:: 백그라운드 전환 감지 1")
+                    carelevoAlarmNotifier.getAlarmsOnce { alarms ->
+                        aapsLogger.debug(LTag.NOTIFICATION, "startAlarmObserving:: 백그라운드 전환 감지 2: $alarms")
+                        handleAlarms(alarms)
+                    }
+                }
+            )
+        }
+
+        carelevoAlarmNotifier.startObserving { alarms ->
+            aapsLogger.debug(LTag.NOTIFICATION, "startAlarmObserving:: alarm size : ${alarms.size}, $alarms")
+            handleAlarms(alarms)
+        }
+    }
+
+    private var lastHandledAlarmIds: Set<String> = emptySet()
+    private fun handleAlarms(alarms: List<CarelevoAlarmInfo>) {
+        aapsLogger.debug(LTag.NOTIFICATION, "startAlarmObserving handleAlarms:: $alarms")
+        if (alarms.isEmpty()) return
+
+        val ids = alarms.map { it.alarmId }.toSet()
+        /*        if (ids == lastHandledAlarmIds) return
+                lastHandledAlarmIds = ids*/
+
+        if (alarms.any { it.alarmType.isCritical() }) {
+            carelevoAlarmNotifier.showAlarmScreen()
+        } else {
+            carelevoAlarmNotifier.showTopNotification(alarms)
+        }
     }
 
     override fun onStop() {
@@ -589,7 +638,11 @@ class CarelevoPumpPlugin @Inject constructor(
 
     override fun isSuspended(): Boolean {
         val result = carelevoPatch.infusionInfo.value?.getOrNull()?.basalInfusionInfo?.isStop ?: false
-        return result
+
+        val patchState = carelevoPatch.getPatchState()
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::isSuspended] result: $patchState")
+
+        return patchState == PatchState.NotConnectedBooted
     }
 
     override fun isBusy(): Boolean {
@@ -597,15 +650,20 @@ class CarelevoPumpPlugin @Inject constructor(
     }
 
     override fun isConnected(): Boolean {
+        Log.d("ble_test", "isConnected called", Throwable("stacktrace"))
+        val connected = carelevoPatch.isCarelevoConnected()
+        val working = carelevoPatch.isWorking
 
-        //val connected = carelevoPatch.isCarelevoConnected()
-        //val working = carelevoPatch.isWorking
+        val result = connected || working
 
-        //val result = connected || working
-
-        val address = carelevoPatch.patchInfo.value?.getOrNull()?.address?.uppercase() ?: return false
+        //return result
+        val address = carelevoPatch.patchInfo.value?.getOrNull()?.address?.uppercase()
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::isConnected] address: $address")
+        if (address == null) {
+            return false
+        }
         val isConnected = carelevoPatch.isBleConnectedNow(address)
-        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::isConnected] $isConnected")
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::isConnected] isConnected: $isConnected")
         return isConnected
     }
 
@@ -617,15 +675,14 @@ class CarelevoPumpPlugin @Inject constructor(
         return false
     }
 
-    var isTryReconnected = false
     override fun connect(reason: String) {
         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::connect] connect called : $reason")
         _lastDateTime = System.currentTimeMillis()
 
-        val patchState = carelevoPatch.patchState.value?.getOrNull()
-        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::disconnect] disconnect called : $reason, patchState : $patchState")
+        val patchState = carelevoPatch.getPatchState()
+        aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::connect] disconnect called : $reason, patchState : $patchState")
 
-        if(reason == "Connection needed") {
+        if (reason == "Connection needed") {
             if (patchState == PatchState.NotConnectedBooted) {
                 startReconnect()
             }
@@ -635,9 +692,6 @@ class CarelevoPumpPlugin @Inject constructor(
     override fun disconnect(reason: String) {
         val patchState = carelevoPatch.patchState.value?.getOrNull()
         aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::disconnect] disconnect called : $reason, patchState : $patchState")
-        if (patchState == PatchState.NotConnectedBooted) {
-            //startReconnect()
-        }
     }
 
     override fun stopConnecting() {
@@ -733,9 +787,11 @@ class CarelevoPumpPlugin @Inject constructor(
                             result.success = true
                             result.enacted = true
                         }
+
                         is ResponseResult.Error -> {
                             aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] error: ${response.e}")
                         }
+
                         else -> {
                             aapsLogger.error(LTag.PUMP, "[CarelevoPumpPlugin::startUpdateBasal] response failed")
                         }
@@ -765,11 +821,17 @@ class CarelevoPumpPlugin @Inject constructor(
         get() = null
 
     fun lastDataTime(): Long {
-        val patchState = carelevoPatch.patchState.value?.getOrNull()
+        val patchState = carelevoPatch.getPatchState()
 
         val lastDateTime = when (patchState) {
             is PatchState.ConnectedBooted,
             is PatchState.NotConnectedNotBooting -> System.currentTimeMillis()
+
+            is PatchState.NotConnectedBooted -> {
+                startReconnect()
+                _lastDateTime
+            }
+
             else -> _lastDateTime
         }
 
@@ -869,12 +931,12 @@ class CarelevoPumpPlugin @Inject constructor(
                 } else {
                     SystemClock.sleep(delayMs)
 
-                    val delivering = kotlin.math.min(
+                    val delivering = min(
                         step * stepUnit,
                         detailedInfo.insulin
                     )
 
-                    val percentage = kotlin.math.min(
+                    val percentage = min(
                         (delivering / detailedInfo.insulin * 100).toInt(),
                         100
                     )
@@ -1106,6 +1168,7 @@ class CarelevoPumpPlugin @Inject constructor(
                         result.enacted = true
                         result.isTempCancel = true
                     }
+
                     else -> {
                         result.success = false
                         result.enacted = false
@@ -1275,7 +1338,6 @@ class CarelevoPumpPlugin @Inject constructor(
     override val pumpDescription: PumpDescription
         get() = _pumpDescription
 
-
     override val isFakingTempsByExtendedBoluses: Boolean
         get() = false
 
@@ -1310,6 +1372,7 @@ class CarelevoPumpPlugin @Inject constructor(
                         isTryReconnected = false
                         when (result) {
                             is CommandResult.Success -> {
+                                bleController.registerPeripheralInfo()
                                 aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] connect success")
                             }
 
@@ -1355,6 +1418,7 @@ class CarelevoPumpPlugin @Inject constructor(
                                         .subscribeOn(aapsSchedulers.io)
                                         .observeOn(aapsSchedulers.io)
                                         .subscribe { result ->
+                                            aapsLogger.debug(LTag.PUMP, "[CarelevoPumpPlugin::startReconnect] DISCOVERED :$result")
                                             if (result !is CommandResult.Success) {
                                                 stopReconnect()
                                             } else {

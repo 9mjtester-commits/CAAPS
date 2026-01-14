@@ -7,24 +7,25 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.util.Log
 import java.util.UUID
 
 @SuppressLint("MissingPermission")
-internal fun BluetoothManager.existBondedDevice(macAddress : String) : Boolean {
-    if(adapter == null) {
+internal fun BluetoothManager.existBondedDevice(macAddress: String): Boolean {
+    if (adapter == null) {
         return false
     }
     val devices = getConnectedDevices(BluetoothProfile.GATT)
     var isExist = false
     devices.forEach {
-        if(it.address == macAddress) {
+        if (it.address == macAddress) {
             isExist = true
         }
     }
     return isExist
 }
 
-internal fun BluetoothDevice.removeBond() : Boolean {
+internal fun BluetoothDevice.removeBond(): Boolean {
     return runCatching {
         this.javaClass.getMethod("removeBond").invoke(this)
     }.fold(
@@ -38,8 +39,10 @@ internal fun BluetoothDevice.removeBond() : Boolean {
     )
 }
 
-internal fun BluetoothGatt.findCharacteristic(uuid : UUID) : BluetoothGattCharacteristic? {
+internal fun BluetoothGatt.findCharacteristic(uuid: UUID): BluetoothGattCharacteristic? {
+    Log.d("ble_test", "deliverTreatment [BleManagerImpl::writeCharacteristic] services : $services")
     services?.forEach { service ->
+        Log.d("ble_test", "deliverTreatment [BleManagerImpl::writeCharacteristic] services : ${service.characteristics}")
         service.characteristics?.firstOrNull() { characteristic ->
             characteristic.uuid == uuid
         }?.let {
@@ -50,16 +53,24 @@ internal fun BluetoothGatt.findCharacteristic(uuid : UUID) : BluetoothGattCharac
     return null
 }
 
-internal fun BluetoothGattCharacteristic.containerProperty(property : Int) = property and property != 0
+internal fun BluetoothGattCharacteristic.containerProperty(property: Int) = property and property != 0
 
-internal fun BluetoothGattCharacteristic.isWritable() : Boolean =
+internal fun BluetoothGattCharacteristic.isWritable(): Boolean =
     containerProperty(BluetoothGattCharacteristic.PERMISSION_READ)
 
-internal fun BluetoothGattCharacteristic.isWritableWithoutResponse() : Boolean =
+internal fun BluetoothGattCharacteristic.isWritableWithoutResponse(): Boolean =
     containerProperty(BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)
 
-internal fun BluetoothGattDescriptor.character(type : ByteArray) : Boolean =
+internal fun BluetoothGattDescriptor.character(type: ByteArray): Boolean =
     value.contentEquals(type)
 
-internal fun BluetoothGattDescriptor.isEnabled() : Boolean =
+internal fun BluetoothGattDescriptor.isEnabled(): Boolean =
     character(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) || character(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE)
+
+fun BluetoothGatt.refresh(): Boolean {
+    return try {
+        this.javaClass.getMethod("refresh").invoke(this) as Boolean
+    } catch (e: Exception) {
+        false
+    }
+}

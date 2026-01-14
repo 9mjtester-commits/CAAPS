@@ -15,6 +15,9 @@ enum class AlarmType(val code: Int) {
         fun fromAlarmType(type: AlarmType): Int {
             return type.code
         }
+
+        fun AlarmType.isCritical(): Boolean =
+            this == AlarmType.WARNING
     }
 }
 
