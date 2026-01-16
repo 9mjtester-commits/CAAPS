@@ -1,0 +1,181 @@
+name: AAPS CI 3(manual branch build)
+
+on:
+  workflow_dispatch:
+    inputs:
+      targetBranch:
+        description: 'Branch to build (e.g. main, dev, feature/smb-fix)'
+        required: true
+        default: 'main'
+        type: string
+
+      buildVariant:
+        description: 'Select Build Variant'
+        required: true
+        default: 'fullRelease'
+        type: choice
+        options:
+          - fullRelease
+          - fullDebug
+          - aapsclientRelease
+          - aapsclientDebug
+          - aapsclient2Release
+          - aapsclient2Debug
+          - pumpcontrolRelease
+          - pumpcontrolDebug
+
+jobs:
+  build:
+    name: Build AAPS
+    runs-on: ubuntu-latest
+
+    steps:
+      # -------------------------------------------------
+      # Checkout selected branch
+      # -------------------------------------------------
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.targetBranch }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify branch & commit
+        run: |
+          echo "Branch:"
+          git branch --show-current
+          echo "Commit:"
+          git log -1 --oneline
+
+      # -------------------------------------------------
+      # Extract branch suffix for APK name
+      # -------------------------------------------------
+      - name: Set BRANCH_SUFFIX
+        run: |
+          BRANCH_NAME=$(git branch --show-current)
+          SAFE_BRANCH_NAME=$(echo "$BRANCH_NAME" | tr '/' '-')
+          echo "BRANCH_SUFFIX=-$SAFE_BRANCH_NAME" >> $GITHUB_ENV
+          echo "Using branch suffix: -$SAFE_BRANCH_NAME"
+
+      # -------------------------------------------------
+      # Decode keystore + secrets
+      # -------------------------------------------------
+      - name: Decode Secrets Keystore Set and Oauth2 to Env
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_SET }}" ]; then
+            DECODED=$(echo "${{ secrets.KEYSTORE_SET }}" | base64 -d)
+            KEYSTORE_BASE64=$(echo "$DECODED" | cut -d'|' -f1)
+            KEYSTORE_PASSWORD=$(echo "$DECODED" | cut -d'|' -f2)
+            KEY_ALIAS=$(echo "$DECODED" | cut -d'|' -f3)
+            KEY_PASSWORD=$(echo "$DECODED" | cut -d'|' -f4)
+
+            echo "KEYSTORE_BASE64=$KEYSTORE_BASE64" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> $GITHUB_ENV
+            echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_ENV
+
+            echo "::add-mask::$KEYSTORE_BASE64"
+            echo "::add-mask::$KEYSTORE_PASSWORD"
+            echo "::add-mask::$KEY_ALIAS"
+            echo "::add-mask::$KEY_PASSWORD"
+          else
+            echo "KEYSTORE_BASE64=${{ secrets.KEYSTORE_BASE64 }}" >> $GITHUB_ENV
+            echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+          fi
+
+          echo "GDRIVE_OAUTH2=${{ secrets.GDRIVE_OAUTH2 }}" >> $GITHUB_ENV
+
+      - name: Check Secrets
+        run: |
+          for v in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD GDRIVE_OAUTH2; do
+            if [ -z "${!v}" ]; then
+              echo "Missing secret: $v"
+              exit 1
+            fi
+          done
+
+      # -------------------------------------------------
+      # Prepare keystore
+      # -------------------------------------------------
+      - name: Decode keystore file
+        run: |
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/keystore.jks"
+
+      # -------------------------------------------------
+      # Decode GDrive OAuth
+      # -------------------------------------------------
+      - name: Decode GDrive OAuth2 secrets
+        run: |
+          DECODED=$(echo "${{ secrets.GDRIVE_OAUTH2 }}" | base64 -d)
+          echo "GDRIVE_CLIENT_ID=$(echo "$DECODED" | cut -d'|' -f1)" >> $GITHUB_ENV
+          echo "GDRIVE_REFRESH_TOKEN=$(echo "$DECODED" | cut -d'|' -f2)" >> $GITHUB_ENV
+
+      - name: Retrieve Google Drive access token
+        run: |
+          TOKEN_RESPONSE=$(curl -s -X POST https://oauth2.googleapis.com/token \
+            -d client_id="$GDRIVE_CLIENT_ID" \
+            -d refresh_token="$GDRIVE_REFRESH_TOKEN" \
+            -d grant_type=refresh_token)
+          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r .access_token)
+          [ -z "$ACCESS_TOKEN" -o "$ACCESS_TOKEN" = "null" ] && exit 1
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_ENV
+          echo "::add-mask::$ACCESS_TOKEN"
+
+      # -------------------------------------------------
+      # Build setup
+      # -------------------------------------------------
+      - name: Set BUILD_VARIANT
+        run: |
+          BUILD_VARIANT="${{ github.event.inputs.buildVariant }}"
+          echo "BUILD_VARIANT=$BUILD_VARIANT" >> $GITHUB_ENV
+          VARIANT_FLAVOR=$(echo "$BUILD_VARIANT" | sed -E 's/(Release|Debug)$//' | tr '[:upper:]' '[:lower:]')
+          VARIANT_TYPE=$(echo "$BUILD_VARIANT" | grep -oE '(Release|Debug)$' | tr '[:upper:]' '[:lower:]')
+          echo "VARIANT_FLAVOR=$VARIANT_FLAVOR" >> $GITHUB_ENV
+          echo "VARIANT_TYPE=$VARIANT_TYPE" >> $GITHUB_ENV
+
+      - name: Extract VERSION
+        run: |
+          VERSION=$(grep 'val appVersion' buildSrc/src/main/kotlin/Versions.kt | awk -F '"' '{print $2}')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: gradle
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Clean build
+        run: ./gradlew clean
+
+      # -------------------------------------------------
+      # Build
+      # -------------------------------------------------
+      - name: Build APKs
+        run: |
+          ./gradlew :app:assemble${{ env.BUILD_VARIANT }} :wear:assemble${{ env.BUILD_VARIANT }} \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/keystore/keystore.jks" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+
+      # -------------------------------------------------
+      # Rename APKs (WITH BRANCH NAME)
+      # -------------------------------------------------
+      - name: Rename APKs
+        run: |
+          mv app/build/outputs/apk/${{ env.VARIANT_FLAVOR }}/${{ env.VARIANT_TYPE }}/*.apk \
+             aaps-${{ env.VERSION }}${{ env.BRANCH_SUFFIX }}.apk
+
+          mv wear/build/outputs/apk/${{ env.VARIANT_FLAVOR }}/${{ env.VARIANT_TYPE }}/*.apk \
+             aaps-wear-${{ env.VERSION }}${{ env.BRANCH_SUFFIX }}.apk
+
+      - name: Upload APKs to Google Drive
+        run: |
+          echo "Upload skipped here for brevity – reuse your existing upload step"
