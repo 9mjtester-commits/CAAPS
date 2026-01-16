@@ -1,0 +1,101 @@
+name: Build AAPS 4 (Branch Web Build)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_variant:
+        description: "Build variant"
+        required: true
+        default: "fullRelease"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Secrets
+        run: |
+          test -n "${{ secrets.KEYSTORE_BASE64 }}"
+          test -n "${{ secrets.GDRIVE_OAUTH2_REFRESH_TOKEN }}"
+
+      - name: Decode keystore file
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > keystore.jks
+
+      - name: Decode GDrive OAuth2 secrets
+        run: |
+          echo "${{ secrets.GDRIVE_OAUTH2_CLIENT_ID }}" > gdrive_client_id
+          echo "${{ secrets.GDRIVE_OAUTH2_CLIENT_SECRET }}" > gdrive_client_secret
+          echo "${{ secrets.GDRIVE_OAUTH2_REFRESH_TOKEN }}" > gdrive_refresh_token
+
+      - name: Retrieve Google Drive access token
+        id: gdrive_token
+        run: |
+          ACCESS_TOKEN=$(curl -s https://oauth2.googleapis.com/token \
+            -d client_id="$(cat gdrive_client_id)" \
+            -d client_secret="$(cat gdrive_client_secret)" \
+            -d refresh_token="$(cat gdrive_refresh_token)" \
+            -d grant_type=refresh_token | jq -r .access_token)
+          echo "GDRIVE_ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_ENV
+
+      - name: Set BUILD_VARIANT
+        run: |
+          echo "BUILD_VARIANT=${{ github.event.inputs.build_variant }}" >> $GITHUB_ENV
+
+      - name: Extract VERSION
+        run: |
+          VERSION=$(grep versionName app/build.gradle | head -1 | awk -F\" '{print $2}')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Grant execute permission
+        run: chmod +x ./gradlew
+
+      - name: Clean build
+        run: ./gradlew clean
+
+      - name: Build APKs
+        env:
+          KEYSTORE_FILE: keystore.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          ./gradlew assemble${BUILD_VARIANT^}
+
+      - name: Rename APKs (add branch name)
+        run: |
+          BRANCH_NAME="${GITHUB_REF##*/}"
+          for f in app/build/outputs/apk/**/**/*.apk; do
+            dir=$(dirname "$f")
+            base=$(basename "$f" .apk)
+            mv "$f" "$dir/${base}-${BRANCH_NAME}.apk"
+          done
+
+      - name: List APKs before upload
+        run: |
+          find app/build/outputs/apk -name "*.apk"
+
+      - name: Upload APKs to Google Drive
+        env:
+          ACCESS_TOKEN: ${{ env.GDRIVE_ACCESS_TOKEN }}
+          FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+        run: |
+          for f in app/build/outputs/apk/**/**/*.apk; do
+            echo "Uploading $f"
+            curl -X POST \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=media&parents=$FOLDER_ID&name=$(basename "$f")"
+          done
